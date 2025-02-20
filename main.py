@@ -3,12 +3,16 @@ import requests
 import os
 from dotenv import load_dotenv
 import pandas as pd
-from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings  # Gemini embeddings
+
+from langchain.text_splitter import CharacterTextSplitter
+from langchain_google_genai import ChatGoogleGenerativeAI  # Gemini LLM
+
 from langchain.prompts import PromptTemplate
 from langchain.document_loaders import CSVLoader, TextLoader, DirectoryLoader
-from langchain.text_splitter import CharacterTextSplitter
+
 from langchain.chains import RetrievalQA
-from langchain.llms import OpenAI
+
 from langchain.vectorstores import FAISS
 import utils.config as config
 from github import Github
@@ -16,7 +20,7 @@ from utils.constants import *
 
 load_dotenv()
 # assign openai api key directly
-os.environ['OPENAI_API_KEY'] = os.getenv('OPENAI_API_KEY')
+os.environ['GOOGLE_API_KEY'] = os.getenv('GOOGLE_API_KEY')  # Gemini API Key
 os.environ['GITHUB_TOKEN'] = os.getenv('GITHUB_TOKEN')
 os.environ['ACTIVELOOP_TOKEN'] = os.getenv('ACTIVELOOP_TOKEN')
 
@@ -50,49 +54,65 @@ def fetch_github_repos(username):
     return repos
 
 
-# Function to display repositories
+# Function to display repositories in a table format with clickable links
 def display_repos(repos):
-    for repo in repos:
-        repo_name = repo["name"]
-        repo_url = repo["html_url"]
-        st.write(f"[{repo_name}]({repo_url})")
+    repo_data = []
 
+    for repo in repos:
+        repo_name = f"[{repo['name']}]({repo['html_url']})"  # Clickable repo name
+        language = repo.get("language", "N/A")
+        repo_data.append([repo_name, language])
+
+    df = pd.DataFrame(repo_data, columns=["Repository Name", "Language"])
+
+    st.subheader("📂 Repository List")
+    st.dataframe(df, use_container_width=True)  # Responsive Table Display
+
+
+
+# Function to display the most complex repository in a beautiful format
 
 def get_user_repos(username):
+    """Gets the repository information of each of the repositories of a GitHub user.
+
+    Args:
+        username: The username of the GitHub user.
+
+    Returns:
+        A list of dictionaries, where each dictionary contains the information of a repository.
+    """
     # Initialize the GitHub client with access token
     client = Github(os.getenv('GITHUB_TOKEN'))
 
     user = client.get_user(username)
     repos = user.get_repos()
+
     repo_info = []
+
     for repo in repos:
+
         # If repo is a fork, skip it
         if repo.fork:
             continue
         print(repo.name)
-        print(repo.language)
         repo_info.append({
             "name": repo.name,
-            #"description": repo.description,
+            "description": repo.description,
             "language": repo.language,
             "stars": repo.stargazers_count,
             "forks": repo.forks_count,
-           "labels": repo.get_labels(),
-           "issues": repo.get_issues(state="all"),
+            "labels": repo.get_labels(),
+            "issues": repo.get_issues(state="all"),
             "contents": repo.get_contents(""),
 
         })
 
     repo_info_df = pd.DataFrame(repo_info)
-    if repo_info_df.empty:
-        st.warning("No repositories found.")
-        return
-
     repo_info_df.to_csv("repo_data.csv")
 
     loader = CSVLoader(file_path="repo_data.csv", encoding="utf-8")
     csv_data = loader.load()
-    csv_embeddings = OpenAIEmbeddings()
+    csv_embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")  # Gemini Embeddings
     vectors = FAISS.from_documents(csv_data, csv_embeddings)
 
     # Create a question-answering chain using the index
@@ -106,7 +126,7 @@ You are:
     - able to infer the intent of the user's question
 
 
-    Remember You are an intelligent CSV Agent who can  understand CSV files and their contents. You are given a CSV file with the following columns: Repository Name, Repository Link, Analysis. You are asked to find the most technically complex and challenging repository from the given CSV file. 
+Remember You are an inteelligent CSV Agent who can  understand CSV files and their contents. You are given a CSV file with the following columns: Repository Name, Repository Link, Analysis. You are asked to find the most technically complex and challenging repository from the given CSV file.
  Complexity in this context represents the level of sophistication and depth of the code, indicating the amount of effort and work invested in the project.
 
 To measure the technical complexity of a GitHub repository using the provided API endpoints, You will analyze various factors such as the number of commits, branches, pull requests, issues,contents , number of forks , stars , and contributors. Additionally, you will consider the programming languages used, the size of the codebase, algorithmic complexity, control flow, coupling and cohesion, adherence to design patterns, and architectural principles.
@@ -121,7 +141,7 @@ You will Analyze the following GitHub repository factors to determine the techni
 7.Contents of the repository
 
 You can consider other factors as well if you think they are relevant for determining the technical complexity of a GitHub repository.
-Calculate the complexity score for each project by assigning weights to each factor and summing up the weighted scores. 
+Calculate the complexity score for each project by assigning weights to each factor and summing up the weighted scores.
 
 The project with the highest complexity score will be considered the most technically complex.
 
@@ -140,13 +160,15 @@ Step 1: Analyze each row and it's contents in the CSV file , each Row represents
 
     Question: {question}
     Now answer the question. Let's think step by step:"""
+
     PROMPT = PromptTemplate(
         template=prompt_template, input_variables=["context", "question"]
     )
 
     chain_type_kwargs = {"prompt": PROMPT}
 
-    chain = RetrievalQA.from_chain_type(llm=OpenAI(), chain_type="stuff", retriever=vectors.as_retriever(),
+    chain = RetrievalQA.from_chain_type(llm=ChatGoogleGenerativeAI(model="gemini-pro", temperature=0),
+                                        chain_type="stuff", retriever=vectors.as_retriever(),  # Gemini LLM
                                         input_key="question", chain_type_kwargs=chain_type_kwargs)
 
     st.subheader("Most Technically Complex Github Repository is")
@@ -173,12 +195,13 @@ The username is : "{username}"
 "https://github.com/{username}/repository_name"
 
 
-[Repository Name](Repository Link) --> This is Important.Don't skip it 
+[Repository Name](Repository Link) --> This is Important.Don't skip it
 
 
 Let's think step by step about how to answer this question:
 
 """
+
     result = chain({"question": query})
     if result is not None:
         st.write(result['result'])
@@ -187,12 +210,17 @@ Let's think step by step about how to answer this question:
     st.stop()
 
 
+
+
+
 # Main app
+
+
 def main():
     config.init()
     # Set up the app title and sidebar
-    st.title("GitHub Automated Analysis")
-    st.sidebar.title("MINI PROJECT By \n Tukesh and Vaibhav")
+    st.title("GitHub Automated Analysis Project")
+    st.sidebar.title("Mini Project")
 
     # Input field for GitHub username
     username = st.sidebar.text_input("Enter GitHub Username")
@@ -201,9 +229,9 @@ def main():
     submit_button = st.sidebar.button("Submit")
     st.sidebar.header("About")
     st.sidebar.info(
-        "This Python-based tool , when given a GitHub user's URL, returns the most technically complex and challenging repository from that user's profile. The tool uses GPT and LangChain to assess each repository individually before determining the most technically challenging one.")
+        "This Python-based tool , when given a GitHub user's URL, returns the most technically complex and challenging repository from that user's profile. The tool will use GPT and LangChain to assess each repository individually before determining the most technically challenging one.")
     st.divider()
-    st.sidebar.write("Made with ❤️ by [Tukesh](https://github.com/tukesh1).")
+    st.sidebar.write("Made with ❤️ by [Tukesh](https://github.com/Tukesh1).")
 
     # Display the repositories
     if submit_button:
